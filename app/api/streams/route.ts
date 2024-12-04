@@ -1,17 +1,18 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
 import { prismaClient } from "@/lib/db";
 import { NextRequest, NextResponse } from "next/server";
-import { number, z } from "zod";
+import { z } from "zod";
 //@ts-expect-error
 import youtubesearchapi from "youtube-search-api";
-
-var YT_REGEX =
-  /^(?:(?:https?:)?\/\/)?(?:www\.)?(?:m\.)?(?:youtu(?:be)?\.com\/(?:v\/|embed\/|watch(?:\/|\?v=))|youtu\.be\/)((?:\w|-){11})(?:\S+)?$/;
+import { YT_REGEX } from "@/lib/util";
+import { getServerSession } from "next-auth";
 
 const createStreamSchema = z.object({
-  createrId: z.string(),
+  creatorId: z.string(),
   url: z.string(),
 });
+
+const MAX_QUEUE_LENGTH = 20;
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,9 +36,26 @@ export async function POST(req: NextRequest) {
       a.width < b.width ? -1 : 1
     );
 
+    const existingActiveStream = await prismaClient.stream.count({
+      where: {
+        userId: data.creatorId
+      }
+    })
+
+    if (existingActiveStream > MAX_QUEUE_LENGTH) {
+      return NextResponse.json(
+        {
+          message: "Maximum limit reached",
+        },
+        {
+          status: 404,
+        }
+      )
+    }
+
     const stream = await prismaClient.stream.create({
       data: {
-        userId: data.createrId,
+        userId: data.creatorId,
         url: data.url,
         extractedId,
         type: "Youtube",
@@ -53,8 +71,9 @@ export async function POST(req: NextRequest) {
       },
     });
     return NextResponse.json({
-      message: "added stream",
-      id: stream.id,
+      ...stream,
+      haveUpvoted: false,
+      upvotes: 0,
     });
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
   } catch (e) {
@@ -72,13 +91,69 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const createrId = req.nextUrl.searchParams.get("createrId");
-  const streams = await prismaClient.stream.findMany({
+  const session = await getServerSession();
+
+  const user = await prismaClient.user.findFirst({
     where: {
-      userId: createrId ?? "",
+      email: session?.user?.email ?? "",
     },
   });
+  if (!user) {
+    return NextResponse.json(
+      {
+        message: "Unauthenticated",
+      },
+      {
+        status: 401,
+      }
+    );
+  }
+
+  const creatorId = req.nextUrl.searchParams.get("creatorId");
+  if (!creatorId) {
+    return NextResponse.json(
+      {
+        message: "CreatorId not found",
+      },
+      {
+        status: 401,
+      }
+    );
+  }
+  const [streams, activeStream] = await Promise.all([
+    await prismaClient.stream.findMany({
+      where: {
+        userId: creatorId,
+        played: false,
+      },
+      include: {
+        _count: {
+          select: {
+            upvotes: true,
+          },
+        },
+        upvotes: {
+          where: {
+            userId: user.id,
+          },
+        },
+      },
+    }),
+    prismaClient.currentStream.findFirst({
+      where: {
+        userId: creatorId,
+      },
+      include: {
+        stream: true,
+      },
+    }),
+  ]);
   return NextResponse.json({
-    streams,
+    streams: streams.map(({ _count, ...rest }) => ({
+      ...rest,
+      upvotes: _count.upvotes,
+      haveUpvoted: rest.upvotes.length ? true : false,
+    })),
+    activeStream,
   });
 }
