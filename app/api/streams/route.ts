@@ -16,7 +16,36 @@ const MAX_QUEUE_LENGTH = 20;
 
 export async function POST(req: NextRequest) {
   try {
+    const session = await getServerSession();
+    const user = await prismaClient.user.findFirst({
+      where: {
+        email: session?.user?.email ?? "",
+      },
+    });
+    if (!user) {
+      return NextResponse.json(
+        {
+          message: "Unauthenticated",
+        },
+        {
+          status: 403,
+        }
+      );
+    }
+
     const data = createStreamSchema.parse(await req.json());
+
+    if (!data.url.trim()) {
+      return NextResponse.json(
+        {
+          message: "YouTube link cannot be empty",
+        },
+        {
+          status: 400,
+        }
+      );
+    }
+
     const isYt = data.url.match(YT_REGEX);
     if (!isYt) {
       return NextResponse.json(
@@ -31,6 +60,74 @@ export async function POST(req: NextRequest) {
     const extractedId = data.url.split("?v=")[1];
 
     const res = await youtubesearchapi.GetVideoDetails(extractedId);
+
+    // Check if the user is not the creator
+    if (user.id !== data.creatorId) {
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+      const userRecentStreams = await prismaClient.stream.count({
+        where: {
+          userId: data.creatorId,
+          addedBy: user.id,
+          createAt: {
+            gte: tenMinutesAgo,
+          },
+        },
+      });
+      // Check for duplicate song in the last 10 minutes
+      const duplicateSong = await prismaClient.stream.findFirst({
+        where: {
+          userId: data.creatorId,
+          extractedId: extractedId,
+          createAt: {
+            gte: tenMinutesAgo,
+          },
+        },
+      });
+      if (duplicateSong) {
+        return NextResponse.json(
+          {
+            message: "This song was already added in the last 10 minutes",
+          },
+          {
+            status: 429,
+          }
+        );
+      }
+      // Rate limiting checks for non-creator users
+      const streamsLastTwoMinutes = await prismaClient.stream.count({
+        where: {
+          userId: data.creatorId,
+          addedBy: user.id,
+          createAt: {
+            gte: twoMinutesAgo,
+          },
+        },
+      });
+      if (streamsLastTwoMinutes >= 2) {
+        return NextResponse.json(
+          {
+            message:
+              "Rate limit exceeded: You can only add 2 songs per 2 minutes",
+          },
+          {
+            status: 429,
+          }
+        );
+      }
+      if (userRecentStreams >= 5) {
+        return NextResponse.json(
+          {
+            message:
+              "Rate limit exceeded: You can only add 5 songs per 10 minutes",
+          },
+          {
+            status: 429,
+          }
+        );
+      }
+    }
+
     const thumbnails = res.thumbnail.thumbnails;
     thumbnails.sort((a: { width: number }, b: { width: number }) =>
       a.width < b.width ? -1 : 1
@@ -38,11 +135,12 @@ export async function POST(req: NextRequest) {
 
     const existingActiveStream = await prismaClient.stream.count({
       where: {
-        userId: data.creatorId
-      }
-    })
+        userId: data.creatorId,
+        played: false,
+      },
+    });
 
-    if (existingActiveStream > MAX_QUEUE_LENGTH) {
+    if (existingActiveStream >= MAX_QUEUE_LENGTH) {
       return NextResponse.json(
         {
           message: "Maximum limit reached",
@@ -50,12 +148,13 @@ export async function POST(req: NextRequest) {
         {
           status: 404,
         }
-      )
+      );
     }
 
     const stream = await prismaClient.stream.create({
       data: {
         userId: data.creatorId,
+        addedBy: user.id,
         url: data.url,
         extractedId,
         type: "Youtube",
@@ -121,7 +220,7 @@ export async function GET(req: NextRequest) {
     );
   }
   const [streams, activeStream] = await Promise.all([
-    await prismaClient.stream.findMany({
+    prismaClient.stream.findMany({
       where: {
         userId: creatorId,
         played: false,
@@ -148,6 +247,9 @@ export async function GET(req: NextRequest) {
       },
     }),
   ]);
+
+  const isCreator = user.id === creatorId;
+
   return NextResponse.json({
     streams: streams.map(({ _count, ...rest }) => ({
       ...rest,
@@ -155,5 +257,7 @@ export async function GET(req: NextRequest) {
       haveUpvoted: rest.upvotes.length ? true : false,
     })),
     activeStream,
+    creatorId,
+    isCreator,
   });
 }
