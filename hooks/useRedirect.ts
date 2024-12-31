@@ -1,17 +1,17 @@
-"use cilent";
-
+"use client";
+import { useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
 
-export function Redirect() {
+export default function useRedirect() {
   const session = useSession();
   const router = useRouter();
 
   useEffect(() => {
-    if (session?.data?.user) {
+    if (session.status === "authenticated") {
       router.push("/dashboard");
+    } else {
+      router.push("/");
     }
   }, [session]);
-  return null;
 }
