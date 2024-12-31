@@ -1,19 +1,23 @@
-"use client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Users2, Radio, Headphones } from "lucide-react";
 import Link from "next/link";
 import Appbar from "../components/Appbar";
-import { Redirect } from "@/components/Redirect";
+import { redirect } from "next/navigation";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth-options";
 
-export default function Home() {
+export default async function Home() {
+  const session = await getServerSession(authOptions);
+  
+  if (session?.user.id) redirect("/dashboard");
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-black dark:from-gray-50 dark:via-gray-100 dark:to-white relative transition-colors duration-300">
       {/* Background pattern */}
       <div className="absolute inset-0 bg-grid-white/[0.05] bg-[size:20px_20px] dark:bg-grid-black/[0.05]" />
       <div className="relative text-white dark:text-gray-900">
         <Appbar />
-        <Redirect />
         {/* Hero Section */}
         <section className="container mx-auto px-4 py-20 text-center">
           <h1 className="mb-4 text-4xl font-bold tracking-tight sm:text-5xl md:text-6xl">
