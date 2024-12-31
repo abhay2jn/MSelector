@@ -1,15 +1,16 @@
-import { prismaClient } from "@/lib/db";
+import { authOptions } from "@/lib/auth-options";
+import { prisma } from "@/lib/db";
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 
 export async function GET() {
-  const session = await getServerSession();
-  const user = await prismaClient.user.findFirst({
-    where: {
-      email: session?.user?.email ?? "",
-    },
-  });
-  if (!user) {
+  const session = await getServerSession(authOptions);
+  // const user = await prisma.user.findFirst({
+  //   where: {
+  //     email: session?.user?.email ?? "",
+  //   },
+  // });
+  if (!session?.user.id) {
     return NextResponse.json(
       {
         message: "Unauthenticated",
@@ -19,7 +20,10 @@ export async function GET() {
       }
     );
   }
-  const mostUpvotedStream = await prismaClient.stream.findFirst({
+
+  const user = session.user;
+
+  const mostUpvotedStream = await prisma.stream.findFirst({
     where: {
       userId: user.id,
       played: false,
@@ -31,7 +35,7 @@ export async function GET() {
     },
   });
   await Promise.all([
-    prismaClient.currentStream.upsert({
+    prisma.currentStream.upsert({
       where: {
         userId: user.id,
       },
@@ -44,7 +48,7 @@ export async function GET() {
         streamId: mostUpvotedStream?.id,
       },
     }),
-    prismaClient.stream.update({
+    prisma.stream.update({
       where: {
         id: mostUpvotedStream?.id ?? "",
       },

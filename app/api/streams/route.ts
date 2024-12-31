@@ -1,11 +1,12 @@
 /* eslint-disable @typescript-eslint/ban-ts-comment */
-import { prismaClient } from "@/lib/db";
+import { prisma } from "@/lib/db";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 //@ts-expect-error
 import youtubesearchapi from "youtube-search-api";
-import { YT_REGEX } from "@/lib/util";
+import { YT_REGEX } from "@/lib/utils";
 import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth-options";
 
 const createStreamSchema = z.object({
   creatorId: z.string(),
@@ -16,13 +17,13 @@ const MAX_QUEUE_LENGTH = 20;
 
 export async function POST(req: NextRequest) {
   try {
-    const session = await getServerSession();
-    const user = await prismaClient.user.findFirst({
-      where: {
-        email: session?.user?.email ?? "",
-      },
-    });
-    if (!user) {
+    const session = await getServerSession(authOptions);
+    // const user = await prisma.user.findFirst({
+    //   where: {
+    //     email: session?.user?.email ?? "",
+    //   },
+    // });
+    if (!session?.user.id) {
       return NextResponse.json(
         {
           message: "Unauthenticated",
@@ -32,6 +33,8 @@ export async function POST(req: NextRequest) {
         }
       );
     }
+
+    const user = session.user;
 
     const data = createStreamSchema.parse(await req.json());
 
@@ -65,7 +68,7 @@ export async function POST(req: NextRequest) {
     if (user.id !== data.creatorId) {
       const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
       const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
-      const userRecentStreams = await prismaClient.stream.count({
+      const userRecentStreams = await prisma.stream.count({
         where: {
           userId: data.creatorId,
           addedBy: user.id,
@@ -75,7 +78,7 @@ export async function POST(req: NextRequest) {
         },
       });
       // Check for duplicate song in the last 10 minutes
-      const duplicateSong = await prismaClient.stream.findFirst({
+      const duplicateSong = await prisma.stream.findFirst({
         where: {
           userId: data.creatorId,
           extractedId: extractedId,
@@ -95,7 +98,7 @@ export async function POST(req: NextRequest) {
         );
       }
       // Rate limiting checks for non-creator users
-      const streamsLastTwoMinutes = await prismaClient.stream.count({
+      const streamsLastTwoMinutes = await prisma.stream.count({
         where: {
           userId: data.creatorId,
           addedBy: user.id,
@@ -133,7 +136,7 @@ export async function POST(req: NextRequest) {
       a.width < b.width ? -1 : 1
     );
 
-    const existingActiveStream = await prismaClient.stream.count({
+    const existingActiveStream = await prisma.stream.count({
       where: {
         userId: data.creatorId,
         played: false,
@@ -151,7 +154,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const stream = await prismaClient.stream.create({
+    const stream = await prisma.stream.create({
       data: {
         userId: data.creatorId,
         addedBy: user.id,
@@ -190,14 +193,14 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  const session = await getServerSession();
+  const session = await getServerSession(authOptions);
 
-  const user = await prismaClient.user.findFirst({
-    where: {
-      email: session?.user?.email ?? "",
-    },
-  });
-  if (!user) {
+  // const user = await prisma.user.findFirst({
+  //   where: {
+  //     email: session?.user?.email ?? "",
+  //   },
+  // });
+  if (!session?.user.id) {
     return NextResponse.json(
       {
         message: "Unauthenticated",
@@ -207,6 +210,8 @@ export async function GET(req: NextRequest) {
       }
     );
   }
+
+  const user = session.user
 
   const creatorId = req.nextUrl.searchParams.get("creatorId");
   if (!creatorId) {
@@ -220,7 +225,7 @@ export async function GET(req: NextRequest) {
     );
   }
   const [streams, activeStream] = await Promise.all([
-    prismaClient.stream.findMany({
+    prisma.stream.findMany({
       where: {
         userId: creatorId,
         played: false,
@@ -238,7 +243,7 @@ export async function GET(req: NextRequest) {
         },
       },
     }),
-    prismaClient.currentStream.findFirst({
+    prisma.currentStream.findFirst({
       where: {
         userId: creatorId,
       },
