@@ -8,7 +8,10 @@ export default function Appbar() {
   const session = useSession();
   return (
     <div className="container mx-auto flex items-center justify-between p-4">
-      <Link href="/" className="text-2xl font-bold text-white dark:text-gray-900">
+      <Link
+        href="/"
+        className="text-2xl font-bold text-white dark:text-gray-900"
+      >
         Music UP
       </Link>
       <div className="flex items-center gap-4">
@@ -34,22 +37,6 @@ export default function Appbar() {
           </Button>
         )}
       </div>
-
-      {/* <div className="flex justify-between">
-        <div>Mselector</div>
-        <div>
-          {session.data?.user && (
-            <button className="m-2 p-2 bg-red-400" onClick={() => signOut()}>
-              Logout
-            </button>
-          )}
-          {!session.data?.user && (
-            <button className="m-2 p-2 bg-lime-500" onClick={() => signIn()}>
-              Sign in
-            </button>
-          )} */}
-      {/* </div>
-      </div> */}
     </div>
   );
 }
