@@ -1,26 +1,14 @@
-"use client";
-
-import React from "react";
 import StreamView from "@/components/StreamView";
+import { redirect } from "next/navigation";
+import { authOptions } from "@/lib/auth-options";
+import { getServerSession } from "next-auth";
 
-interface Song {
-  id: string;
-  type: string;
-  url: string;
-  extractedId: string;
-  title: string;
-  smallImg: string;
-  bigImg: string;
-  active: boolean;
-  userId: string;
-  upvotes: number;
-  haveUpvoted: boolean;
+export default async function Dashboard() {
+  const session = await getServerSession(authOptions);
+
+  if (!session?.user.id) redirect("/");
+
+  return <StreamView creatorId={session.user.id} playVideo={true} />;
 }
 
-const REFRESH_INTERNAL_MS = 10 * 1000;
-
-const creatorId = "76a6eac6-ed74-430e-857f-dd605af06623";
-
-export default function Dashboard() {
-  return <StreamView creatorId={creatorId} playVideo={true} />;
-}
+export const dynamic = "auto";

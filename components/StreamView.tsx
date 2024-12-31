@@ -4,13 +4,24 @@ import React, { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import * as Lucide from "lucide-react";
-import { useToast } from "@/hooks/use-toast";
 import Appbar from "@/components/Appbar";
 import { Card, CardContent } from "@/components/ui/card";
-import { YT_REGEX } from "@/lib/util";
+import { YT_REGEX } from "@/lib/utils";
 import "react-lite-youtube-embed/dist/LiteYouTubeEmbed.css";
 import LiteYouTubeEmbed from "react-lite-youtube-embed";
 import YouTubePlayer from "youtube-player";
+import { Session } from "next-auth";
+import { useSession } from "next-auth/react";
+import { toast, ToastContainer } from "react-toastify";
+import "react-toastify/ReactToastify.css"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 
 interface Song {
   id: string;
@@ -24,6 +35,15 @@ interface Song {
   userId: string;
   upvotes: number;
   haveUpvoted: boolean;
+}
+
+interface CustomSession extends Omit<Session, "user"> {
+  user: {
+    id: string;
+    name?: string | null;
+    email?: string | null;
+    image?: string | null;
+  };
 }
 
 export default function StreamView({
@@ -41,47 +61,89 @@ export default function StreamView({
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [loading, setLoading] = useState(false);
   const [playNextLoader, setPlayNextLoader] = useState(false);
-  const videoPlayerRef = useRef();
+  const videoPlayerRef = useRef<HTMLDivElement>(null);
+  const { data: session } = useSession() as { data: CustomSession | null };
+  const [creatorUserId, setCreatorUserId] = useState<string | null>(null);
+  const [isCreator, setIsCreator] = useState(false);
+  const [isEmptyQueueDialogOpen, setIsEmptyQueueDialogOpen] = useState(false);
 
   async function refreshStreams() {
-    const res = await fetch(`/api/streams/?creatorId=${creatorId}`, {
-      credentials: "include",
-    });
-    const json = await res.json();
-    setSongs(
-      json.streams.sort((a: any, b: any) => (a.upvotes < b.upvotes ? 1 : -1))
-    );
-    setCurrentSong((songs) => {
-      if (songs?.id === json.activeStream?.stream?.id) {
-        return songs;
+    try {
+      const res = await fetch(`/api/streams/?creatorId=${creatorId}`, {
+        credentials: "include",
+      });
+      const json = await res.json();
+      if (json.streams && Array.isArray(json.streams)) {
+        setSongs(
+          json.streams.length > 0
+            ? json.streams.sort((a: any, b: any) =>
+                b.upvotes - a.upvotes)
+            : []
+        );
+      } else {
+        setSongs([]);
       }
-      return json.activeStream.stream;
-    });
+      setCurrentSong((songs) => {
+        if (songs?.id === json.activeStream?.stream?.id) {
+          return songs;
+        }
+        return json.activeStream.stream;
+      });
+      setCreatorUserId(json.creatorUserId);
+      setIsCreator(json.isCreator);
+    } catch (error) {
+      console.error("Error refreshing streams:", error);
+      setSongs([]);
+      setCurrentSong(null);
+    }
   }
-
-  const { toast } = useToast();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (!youtubeLink.trim()) {
+      toast.error("Youtube link cannot be empty");
+      return;
+    }
+    if (!youtubeLink.match(YT_REGEX)) {
+      toast.error("Invalid URL format");
+      return;
+    }
     setLoading(true);
-    const res = await fetch("/api/streams/", {
-      method: "POST",
-      body: JSON.stringify({
-        creatorId: "76a6eac6-ed74-430e-857f-dd605af06623",
-        url: youtubeLink,
-      }),
-    });
-    setSongs([...songs, await res.json()]);
-    setLoading(false);
-    setYoutubeLink("");
+    try {
+      const res = await fetch("/api/streams/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          creatorId,
+          url: youtubeLink,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.message || "Something went wrong");
+      }
+      setSongs([...songs, data]);
+      setYoutubeLink("");
+      toast.success("Song addded to queue successfully");
+    } catch (error) {
+      if (error instanceof Error) {
+        toast.error(error.message);
+      } else {
+        toast.error("Unexpected error occurred");
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     refreshStreams();
-    const interval = setInterval(() => {
-      //  refreshStreams();
-    }, REFRESH_INTERNAL_MS);
-  }, []);
+    const interval = setInterval(refreshStreams, REFRESH_INTERNAL_MS);
+    return () => clearInterval(interval);
+  }, [creatorId]);
 
   const handleVote = (id: string, isUpvote: boolean) => {
     setSongs(
@@ -116,16 +178,19 @@ export default function StreamView({
         const json = await data.json();
         setCurrentSong(json.stream);
         setSongs((q) => q.filter((x) => x.id !== json.stream?.id));
-      } catch (e) {}
-      setPlayNextLoader(false);
+      } catch (e) {
+        console.error("Error while playing playing next song", e);
+      } finally {
+        setPlayNextLoader(false);
+      }
     }
   };
 
   useEffect(() => {
-    if (!videoPlayerRef.current) {
+    if (!videoPlayerRef.current || !currentSong) {
       return;
     }
-    let player = YouTubePlayer(videoPlayerRef.current);
+    const player = YouTubePlayer(videoPlayerRef.current);
 
     // 'loadVideoById' is queued until the player is ready to receive API calls.
     player.loadVideoById(currentSong?.extractedId);
@@ -133,7 +198,7 @@ export default function StreamView({
     // 'playVideo' is queue until the player is ready to received API calls and after 'loadVideoById' has been called.
     player.playVideo();
 
-    function eventHandler(event: any) {
+    function eventHandler(event: { data: number }) {
       if (event.data === 0) {
         playNext();
       }
@@ -144,31 +209,53 @@ export default function StreamView({
     };
   }, [currentSong, videoPlayerRef]);
 
-  const handleShare = async () => {
-    const shareData = {
-      title: "Check out my music queue!",
-      text: "Join my music session and vote for your favorite songs!",
-      url: `${window.location.hostname}/creator/${creatorId}`,
-    };
-
+  const emptyQueue = async () => {
     try {
-      if (navigator.share) {
-        await navigator.share(shareData);
+      const res = await fetch("/api/streams/empty-queue", {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(data.message);
+        refreshStreams();
+        setIsEmptyQueueDialogOpen(false);
       } else {
-        await navigator.clipboard.writeText(window.location.href);
-        toast({
-          title: "Link copied to clipboard",
-          description: "Share this link with your fans!",
-        });
+        toast.error(data.message || "Failed to empty queue");
       }
     } catch (error) {
-      console.error("Error sharing:", error);
-      toast({
-        title: "Error sharing",
-        description: "There was an error sharing the link. Please try again.",
-        variant: "destructive",
-      });
+      console.error("Error empty queue:", error);
+      toast.error("An error occurred while emptying the queue");
     }
+  };
+
+  const removeSong = async (streamId: string) => {
+    try {
+      const res = await fetch(`/api/streams/remove?streamId=${streamId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        toast.success("Song removed successfully");
+        refreshStreams();
+      } else {
+        toast.error("Error occurred while removing the song");
+      }
+    } catch (error) {
+      console.error("An error occurred while removing the song:", error);
+      toast.error("An error occurred while removing the song");
+    }
+  };
+
+  const handleShare = () => {
+    const shareableLink = `${window.location.origin}/creator/${creatorId}`;
+    navigator.clipboard.writeText(shareableLink).then(
+      () => {
+        toast.success("Link copied to clipboard!");
+      },
+      (err) => {
+        console.error("Could not copy text: ", err);
+        toast.error("Failed to copy link. Please try again.");
+      }
+    );
   };
 
   return (
@@ -188,6 +275,14 @@ export default function StreamView({
             <Lucide.Share2 className="w-4 h-4 mr-2" />
             Share
           </Button>
+          {isCreator && (
+            <Button
+              onClick={() => setIsEmptyQueueDialogOpen(true)}
+              className="bg-purple-600 hover:bg-purple-700 text-white dark:bg-purple-500 dark:hover:bg-purple-600"
+            >
+              <Lucide.Trash2 className="mr-2 h-4 w-4" /> Empty Queue
+            </Button>
+          )}
         </div>
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Add to Queue Section */}
@@ -211,10 +306,7 @@ export default function StreamView({
         {youtubeLink && youtubeLink.match(YT_REGEX) && !loading && (
           <Card className="bg-gray-800 border-gray-700 text-white placeholder:text-gray-400 dark:bg-white dark:border-gray-300 dark:text-gray-900 dark:placeholder:text-gray-500">
             <CardContent className="p-4">
-              <LiteYouTubeEmbed
-                title=""
-                id={youtubeLink.split("?v=")[1] ?? youtubeLink.split("?si")[2]}
-              />
+              <LiteYouTubeEmbed title="" id={youtubeLink.split("?v=")[1]} />
               {/* <p className="mt-2 text-center text-white placeholder:text-gray-400  dark:text-gray-900 dark:placeholder:text-gray-500">
                 Video Preview
               </p> */}
@@ -237,7 +329,10 @@ export default function StreamView({
                 <div>
                   {playVideo ? (
                     <>
-                      <div ref={videoPlayerRef} className="w-full" />
+                      <div
+                        ref={videoPlayerRef}
+                        className="w-full aspect-video"
+                      />
                       {/* <iframe
                         width={"100%"}
                         height={300}
@@ -309,9 +404,7 @@ export default function StreamView({
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() =>
-                        handleVote(song.id, song.haveUpvoted ? false : true)
-                      }
+                      onClick={() => handleVote(song.id, song.haveUpvoted)}
                       className="flex items-center space-x-1 text-gray-300 hover:text-white hover:bg-gray-700 dark:text-gray-600 dark:hover:text-gray-900 dark:hover:bg-gray-200"
                     >
                       {song.haveUpvoted ? (
@@ -321,6 +414,16 @@ export default function StreamView({
                       )}
                       <span>{song.upvotes}</span>
                     </Button>
+                    {isCreator && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => removeSong(song.id)}
+                        className="bg-purple-600 hover:bg-purple-700 text-white dark:bg-purple-500 dark:hover:bg-purple-600"
+                      >
+                        <Lucide.X className="h-4 w-4" />
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -328,6 +431,46 @@ export default function StreamView({
           ))}
         </div>
       </div>
+      <ToastContainer
+        position="top-right"
+        autoClose={3000}
+        hideProgressBar={false}
+        newestOnTop={false}
+        closeOnClick
+        rtl={false}
+        pauseOnFocusLoss
+        draggable
+        pauseOnHover
+        theme="dark"
+      />
+      <Dialog
+        open={isEmptyQueueDialogOpen}
+        onOpenChange={setIsEmptyQueueDialogOpen}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Empty Queue</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to empty the queue? This will remove all
+              songs from the queue. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setIsEmptyQueueDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={emptyQueue}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              Empty Queue
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
